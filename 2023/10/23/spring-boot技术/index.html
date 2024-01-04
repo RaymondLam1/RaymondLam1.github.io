@@ -4,19 +4,18 @@
   <meta charset="utf-8">
   
   
-  <title>spring boot技术 | Hexo</title>
+  <title>spring boot classloader | Hexo</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
   <meta name="description" content="前言本文是介绍spring boot 2.5.*的启动工作原理，本文是在横云断岭的文章：https:&#x2F;&#x2F;hengyun.tech&#x2F;spring-boot-application-start-analysis&#x2F; 基础上对spring boot 2.5.12做一些及时更新。要学习到两点：  spring boot是如何启动的 spring boot embed tomcat是如何工作的？静态文件、js">
 <meta property="og:type" content="article">
-<meta property="og:title" content="spring boot技术">
+<meta property="og:title" content="spring boot classloader">
 <meta property="og:url" content="http://example.com/2023/10/23/spring-boot%E6%8A%80%E6%9C%AF/index.html">
 <meta property="og:site_name" content="Hexo">
 <meta property="og:description" content="前言本文是介绍spring boot 2.5.*的启动工作原理，本文是在横云断岭的文章：https:&#x2F;&#x2F;hengyun.tech&#x2F;spring-boot-application-start-analysis&#x2F; 基础上对spring boot 2.5.12做一些及时更新。要学习到两点：  spring boot是如何启动的 spring boot embed tomcat是如何工作的？静态文件、js">
 <meta property="og:locale" content="en_US">
 <meta property="article:published_time" content="2023-10-23T13:39:54.000Z">
-<meta property="article:modified_time" content="2023-10-23T14:54:55.375Z">
+<meta property="article:modified_time" content="2024-01-04T15:02:30.731Z">
 <meta property="article:author" content="John Doe">
-<meta property="article:tag" content="spring-boot">
 <meta name="twitter:card" content="summary">
   
     <link rel="alternate" href="/atom.xml" title="Hexo" type="application/atom+xml">
@@ -90,7 +89,7 @@
         
   
     <h1 class="p-name article-title" itemprop="headline name">
-      spring boot技术
+      spring boot classloader
     </h1>
   
 
@@ -157,16 +156,148 @@
 <li>spring boot应用打包之后，生成一个fat jar，里面包含了应用依赖的jar包，还有Spring boot loader相关的类</li>
 <li>Fat jar的启动Main函数是JarLauncher，它负责创建一个LaunchedURLClassLoader来加载&#x2F;BOOT-INF下面的类，并以一个新线程启动应用的Main函数。</li>
 </ol>
+<h1 id="spring-boot-loader里的细节"><a href="#spring-boot-loader里的细节" class="headerlink" title="spring boot loader里的细节"></a>spring boot loader里的细节</h1><h2 id="JarFile-URL扩展"><a href="#JarFile-URL扩展" class="headerlink" title="JarFile URL扩展"></a>JarFile URL扩展</h2><p>Spring boot能做到以一个fat jar来启动，最重要的一点是它实现了jar in jar的加载方式。</p>
+<p>JDK原始的JarFile URL的定义可以参考这里：</p>
+<p><a target="_blank" rel="noopener" href="https://docs.oracle.com/en/java/javase/20/docs/specs/jar/jar.html">https://docs.oracle.com/en/java/javase/20/docs/specs/jar/jar.html</a></p>
+<p>原始的JarFile URL是这样子的：</p>
+<p><code>jar:file:/tmp/target/demo-0.0.1-SNAPSHOT.jar!/</code></p>
+<p>jar包里的资源的URL：</p>
+<p><code>jar:file:/tmp/target/demo-0.0.1-SNAPSHOT.jar!/com/example/SpringBootDemoApplication.class</code></p>
+<p>可以看到对于Jar里的资源，定义以’!&#x2F;‘来分隔。原始的JarFile URL只支持一个’!&#x2F;‘。</p>
+<p>Spring boot扩展了这个协议，让它支持多个’!&#x2F;‘，就可以表示jar in jar，jar in directory的资源了。</p>
+<p>比如下面的URL表示demo-0.0.1-SNAPSHOT.jar这个jar里lib目录下面的spring-beans-4.2.3.RELEASE.jar里面的MANIFEST.MF：</p>
+<p><code>jar:file:/tmp/target/demo-0.0.1-SNAPSHOT.jar!/lib/spring-beans-4.2.3.RELEASE.jar!/META-INF/MANIFEST.MF</code></p>
+<h3 id="自定义URLStreamHandler，扩展JarFile和JarURLConnection"><a href="#自定义URLStreamHandler，扩展JarFile和JarURLConnection" class="headerlink" title="自定义URLStreamHandler，扩展JarFile和JarURLConnection"></a>自定义URLStreamHandler，扩展JarFile和JarURLConnection</h3><p>在构造一个URL时，可以传递一个Handler，而JDK自带有默认的Handler类，应用可以自己注册Handler来处理自定义的URL。</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="title function_">URL</span><span class="params">(String protocol,</span></span><br><span class="line"><span class="params">           String host,</span></span><br><span class="line"><span class="params">           <span class="type">int</span> port,</span></span><br><span class="line"><span class="params">           String file,</span></span><br><span class="line"><span class="params">           URLStreamHandler handler)</span></span><br><span class="line">    <span class="keyword">throws</span> MalformedURLException</span><br></pre></td></tr></table></figure>
+
+<p>参考：<br><a target="_blank" rel="noopener" href="https://docs.oracle.com/javase/8/docs/api/java/net/URL.html#URL-java.lang.String-java.lang.String-int-java.lang.String-">https://docs.oracle.com/javase/8/docs/api/java/net/URL.html#URL-java.lang.String-java.lang.String-int-java.lang.String-</a></p>
+<p>Spring boot通过注册了一个自定义的Handler类来处理多重jar in jar的逻辑。</p>
+<p>这个Handler内部会用SoftReference来缓存所有打开过的JarFile。</p>
+<p>在处理像下面这样的URL时，会循环处理’!&#x2F;‘分隔符，从最上层出发，先构造出demo-0.0.1-SNAPSHOT.jar这个JarFile，再构造出spring-beans-4.2.3.RELEASE.jar这个JarFile，然后再构造出指向MANIFEST.MF的JarURLConnection。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">jar:file:/tmp/target/demo-0.0.1-SNAPSHOT.jar!/lib/spring-beans-4.2.3.RELEASE.jar!/META-INF/MANIFEST.MF</span><br></pre></td></tr></table></figure>
+
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">//org.springframework.boot.loader.jar.Handler</span></span><br><span class="line"><span class="keyword">public</span> <span class="keyword">class</span> <span class="title class_">Handler</span> <span class="keyword">extends</span> <span class="title class_">URLStreamHandler</span> &#123;</span><br><span class="line">	<span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">final</span> <span class="type">String</span> <span class="variable">SEPARATOR</span> <span class="operator">=</span> <span class="string">&quot;!/&quot;</span>;</span><br><span class="line">	<span class="keyword">private</span> <span class="keyword">static</span> SoftReference&lt;Map&lt;File, JarFile&gt;&gt; rootFileCache;</span><br><span class="line">	<span class="meta">@Override</span></span><br><span class="line">	<span class="keyword">protected</span> URLConnection <span class="title function_">openConnection</span><span class="params">(URL url)</span> <span class="keyword">throws</span> IOException &#123;</span><br><span class="line">		<span class="keyword">if</span> (<span class="built_in">this</span>.jarFile != <span class="literal">null</span>) &#123;</span><br><span class="line">			<span class="keyword">return</span> <span class="keyword">new</span> <span class="title class_">JarURLConnection</span>(url, <span class="built_in">this</span>.jarFile);</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">try</span> &#123;</span><br><span class="line">			<span class="keyword">return</span> <span class="keyword">new</span> <span class="title class_">JarURLConnection</span>(url, getRootJarFileFromUrl(url));</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">catch</span> (Exception ex) &#123;</span><br><span class="line">			<span class="keyword">return</span> openFallbackConnection(url, ex);</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">public</span> JarFile <span class="title function_">getRootJarFileFromUrl</span><span class="params">(URL url)</span> <span class="keyword">throws</span> IOException &#123;</span><br><span class="line">		<span class="type">String</span> <span class="variable">spec</span> <span class="operator">=</span> url.getFile();</span><br><span class="line">		<span class="type">int</span> <span class="variable">separatorIndex</span> <span class="operator">=</span> spec.indexOf(SEPARATOR);</span><br><span class="line">		<span class="keyword">if</span> (separatorIndex == -<span class="number">1</span>) &#123;</span><br><span class="line">			<span class="keyword">throw</span> <span class="keyword">new</span> <span class="title class_">MalformedURLException</span>(<span class="string">&quot;Jar URL does not contain !/ separator&quot;</span>);</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="type">String</span> <span class="variable">name</span> <span class="operator">=</span> spec.substring(<span class="number">0</span>, separatorIndex);</span><br><span class="line">		<span class="keyword">return</span> getRootJarFile(name);</span><br><span class="line">	&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="ClassLoader如何读取到Resource"><a href="#ClassLoader如何读取到Resource" class="headerlink" title="ClassLoader如何读取到Resource"></a>ClassLoader如何读取到Resource</h3><p>对于一个ClassLoader，它需要哪些能力？</p>
+<ul>
+<li>查找资源</li>
+<li>读取资源</li>
+</ul>
+<p>对应的API是：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> URL <span class="title function_">findResource</span><span class="params">(String name)</span></span><br><span class="line"><span class="keyword">public</span> InputStream <span class="title function_">getResourceAsStream</span><span class="params">(String name)</span></span><br></pre></td></tr></table></figure>
+
+<p>实际上流程是这样子的：</p>
+<ul>
+<li>LaunchedURLClassLoader.loadClass</li>
+<li>URL.openConnection()</li>
+<li>Handler.openConnection(URL)</li>
+</ul>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">//org.springframework.boot.loader.jar.JarURLConnection</span></span><br><span class="line">	<span class="keyword">public</span> InputStream <span class="title function_">getInputStream</span><span class="params">()</span> <span class="keyword">throws</span> IOException &#123;</span><br><span class="line">		<span class="keyword">if</span> (<span class="built_in">this</span>.jarFile == <span class="literal">null</span>) &#123;</span><br><span class="line">			<span class="keyword">throw</span> FILE_NOT_FOUND_EXCEPTION;</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">if</span> (<span class="built_in">this</span>.jarEntryName.isEmpty() &amp;&amp; <span class="built_in">this</span>.jarFile.getType() == JarFile.JarFileType.DIRECT) &#123;</span><br><span class="line">			<span class="keyword">throw</span> <span class="keyword">new</span> <span class="title class_">IOException</span>(<span class="string">&quot;no entry name specified&quot;</span>);</span><br><span class="line">		&#125;</span><br><span class="line">		connect();</span><br><span class="line">		<span class="type">InputStream</span> <span class="variable">inputStream</span> <span class="operator">=</span> (<span class="built_in">this</span>.jarEntryName.isEmpty() ? <span class="built_in">this</span>.jarFile.getInputStream()</span><br><span class="line">				: <span class="built_in">this</span>.jarFile.getInputStream(<span class="built_in">this</span>.jarEntry));</span><br><span class="line">		<span class="keyword">if</span> (inputStream == <span class="literal">null</span>) &#123;</span><br><span class="line">			throwFileNotFound(<span class="built_in">this</span>.jarEntryName, <span class="built_in">this</span>.jarFile);</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">return</span> inputStream;</span><br><span class="line">	&#125;</span><br></pre></td></tr></table></figure>
+
+<p>从一个URL，到最终读取到URL里的内容，整个过程是比较复杂的，总结下：</p>
+<ul>
+<li>spring boot注册了一个Handler来处理”jar:”这种协议的URL</li>
+<li>spring boot扩展了JarFile和JarURLConnection，内部处理jar in jar的情况</li>
+<li>在处理多重jar in jar的URL时，spring boot会循环处理，并缓存已经加载到的JarFile</li>
+<li>对于多重jar in jar，实际上是解压到了临时目录来处理，可以参考JarFileArchive里的代码</li>
+<li>在获取URL的InputStream时，最终获取到的是JarFile里的JarEntryData</li>
+</ul>
+<p>然后，URLClassLoader是如何getResource的呢？</p>
+<p>URLClassLoader在构造时，有URL[]数组参数，它内部会用这个数组来构造一个URLClassPath:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="type">URLClassPath</span> <span class="variable">ucp</span> <span class="operator">=</span> <span class="keyword">new</span> <span class="title class_">URLClassPath</span>(urls);</span><br></pre></td></tr></table></figure>
+
+<p>在 URLClassPath 内部会为这些URLS 都构造一个Loader，然后在getResource时，会从这些Loader里一个个去尝试获取。<br>如果获取成功的话，就像下面那样包装为一个Resource。</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br></pre></td><td class="code"><pre><span class="line">Resource <span class="title function_">getResource</span><span class="params">(<span class="keyword">final</span> String name, <span class="type">boolean</span> check)</span> &#123;</span><br><span class="line">    <span class="keyword">final</span> URL url;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        url = <span class="keyword">new</span> <span class="title class_">URL</span>(base, ParseUtil.encodePath(name, <span class="literal">false</span>));</span><br><span class="line">    &#125; <span class="keyword">catch</span> (MalformedURLException e) &#123;</span><br><span class="line">        <span class="keyword">throw</span> <span class="keyword">new</span> <span class="title class_">IllegalArgumentException</span>(<span class="string">&quot;name&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">final</span> URLConnection uc;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        <span class="keyword">if</span> (check) &#123;</span><br><span class="line">            URLClassPath.check(url);</span><br><span class="line">        &#125;</span><br><span class="line">        uc = url.openConnection();</span><br><span class="line">        <span class="type">InputStream</span> <span class="variable">in</span> <span class="operator">=</span> uc.getInputStream();</span><br><span class="line">        <span class="keyword">if</span> (uc <span class="keyword">instanceof</span> JarURLConnection) &#123;</span><br><span class="line">            <span class="comment">/* Need to remember the jar file so it can be closed</span></span><br><span class="line"><span class="comment">             * in a hurry.</span></span><br><span class="line"><span class="comment">             */</span></span><br><span class="line">            <span class="type">JarURLConnection</span> <span class="variable">juc</span> <span class="operator">=</span> (JarURLConnection)uc;</span><br><span class="line"></span><br><span class="line">            <span class="type">boolean</span> <span class="variable">firstLoad</span> <span class="operator">=</span> jarfile == <span class="literal">null</span>;</span><br><span class="line"></span><br><span class="line">            jarfile = JarLoader.checkJar(juc.getJarFile());</span><br><span class="line"></span><br><span class="line">            <span class="keyword">if</span> (firstLoad &amp;&amp; JarLoadEvent.isEnabled()) &#123;</span><br><span class="line">                Tooling.notifyEvent(JarLoadEvent.jarLoadEvent(url, jarfile));</span><br><span class="line">            &#125;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125; <span class="keyword">catch</span> (Exception e) &#123;</span><br><span class="line">        <span class="keyword">return</span> <span class="literal">null</span>;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> <span class="keyword">new</span> <span class="title class_">Resource</span>() &#123;</span><br><span class="line">        <span class="keyword">public</span> String <span class="title function_">getName</span><span class="params">()</span> &#123; <span class="keyword">return</span> name; &#125;</span><br><span class="line">        <span class="keyword">public</span> URL <span class="title function_">getURL</span><span class="params">()</span> &#123; <span class="keyword">return</span> url; &#125;</span><br><span class="line">        <span class="keyword">public</span> URL <span class="title function_">getCodeSourceURL</span><span class="params">()</span> &#123; <span class="keyword">return</span> base; &#125;</span><br><span class="line">        <span class="keyword">public</span> InputStream <span class="title function_">getInputStream</span><span class="params">()</span> <span class="keyword">throws</span> IOException &#123;</span><br><span class="line">            <span class="keyword">return</span> uc.getInputStream();</span><br><span class="line">        &#125;</span><br><span class="line">        <span class="keyword">public</span> <span class="type">int</span> <span class="title function_">getContentLength</span><span class="params">()</span> <span class="keyword">throws</span> IOException &#123;</span><br><span class="line">            <span class="keyword">return</span> uc.getContentLength();</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>从代码里可以看到，实际上是调用了url.openConnection()。这样完整的链条就可以连接起来了。</p>
+<h2 id="在IDE-开放目录启动Spring-boot应用"><a href="#在IDE-开放目录启动Spring-boot应用" class="headerlink" title="在IDE&#x2F;开放目录启动Spring boot应用"></a>在IDE&#x2F;开放目录启动Spring boot应用</h2><p>在上面只提到在一个fat jar里启动Spring boot应用的过程，下面分析IDE里Spring boot是如何启动的。</p>
+<p>在IDE里，直接运行的Main函数是应用自己的Main函数：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">@SpringBootApplication</span></span><br><span class="line"><span class="keyword">public</span> <span class="keyword">class</span> <span class="title class_">SpringBootDemoApplication</span> &#123;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title function_">main</span><span class="params">(String[] args)</span> &#123;</span><br><span class="line">        SpringApplication.run(SpringBootDemoApplication.class, args);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>其实在IDE里启动Spring boot应用是最简单的一种情况，因为依赖的Jar都让IDE放到classpath里了，所以Spring boot直接启动就完事了。</p>
+<p>还有一种情况是在一个开放目录下启动Spring boot启动。所谓的开放目录就是把fat jar解压，然后直接启动应用。</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">java org.springframework.boot.loader.JarLauncher</span><br></pre></td></tr></table></figure>
+
+<p>这时，Spring boot会判断当前是否在一个目录里，如果是的，则构造一个ExplodedArchive（前面在jar里时是JarFileArchive），后面的启动流程类似fat jar的。</p>
+<h2 id="Embead-Tomcat的启动流程"><a href="#Embead-Tomcat的启动流程" class="headerlink" title="Embead Tomcat的启动流程"></a>Embead Tomcat的启动流程</h2><p>spring boot在启动时，先通过一个简单的查找Servlet类的方式来判断是不是在web环境：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">final</span> String[] WEB_ENVIRONMENT_CLASSES = &#123; <span class="string">&quot;javax.servlet.Servlet&quot;</span>,</span><br><span class="line">    <span class="string">&quot;org.springframework.web.context.ConfigurableWebApplicationContext&quot;</span> &#125;;</span><br><span class="line"></span><br><span class="line"><span class="keyword">private</span> <span class="type">boolean</span> <span class="title function_">deduceWebEnvironment</span><span class="params">()</span> &#123;</span><br><span class="line">    <span class="keyword">for</span> (String className : WEB_ENVIRONMENT_CLASSES) &#123;</span><br><span class="line">        <span class="keyword">if</span> (!ClassUtils.isPresent(className, <span class="literal">null</span>)) &#123;</span><br><span class="line">            <span class="keyword">return</span> <span class="literal">false</span>;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> <span class="literal">true</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
       
     </div>
     <footer class="article-footer">
-      <a data-url="http://example.com/2023/10/23/spring-boot%E6%8A%80%E6%9C%AF/" data-id="clo2y7q430000v9je8zvi2hq2" data-title="spring boot技术" class="article-share-link"><span class="fa fa-share">Share</span></a>
+      <a data-url="http://example.com/2023/10/23/spring-boot%E6%8A%80%E6%9C%AF/" data-id="clo2y7q430000v9je8zvi2hq2" data-title="spring boot classloader" class="article-share-link"><span class="fa fa-share">Share</span></a>
       
       
       
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/spring-boot/" rel="tag">spring-boot</a></li></ul>
-
     </footer>
   </div>
   
@@ -174,9 +305,9 @@
 <nav id="article-nav">
   
   
-    <a href="/2023/10/22/%E9%9A%8F%E7%AC%94/" id="article-nav-older" class="article-nav-link-wrap">
+    <a href="/2023/10/22/hello-world/" id="article-nav-older" class="article-nav-link-wrap">
       <strong class="article-nav-caption">Older</strong>
-      <div class="article-nav-title">随笔</div>
+      <div class="article-nav-title">Hello World</div>
     </a>
   
 </nav>
@@ -193,29 +324,15 @@
 
   
     
-  <div class="widget-wrap">
-    <h3 class="widget-title">Tags</h3>
-    <div class="widget">
-      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/spring-boot/" rel="tag">spring-boot</a></li></ul>
-    </div>
-  </div>
-
 
   
     
-  <div class="widget-wrap">
-    <h3 class="widget-title">Tag Cloud</h3>
-    <div class="widget tagcloud">
-      <a href="/tags/spring-boot/" style="font-size: 10px;">spring-boot</a>
-    </div>
-  </div>
-
   
     
   <div class="widget-wrap">
     <h3 class="widget-title">Archives</h3>
     <div class="widget">
-      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">October 2023</a></li></ul>
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">October 2023</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">January 2023</a></li></ul>
     </div>
   </div>
 
@@ -228,15 +345,15 @@
       <ul>
         
           <li>
-            <a href="/2023/10/23/spring-boot%E6%8A%80%E6%9C%AF/">spring boot技术</a>
-          </li>
-        
-          <li>
-            <a href="/2023/10/22/%E9%9A%8F%E7%AC%94/">随笔</a>
+            <a href="/2023/10/23/spring-boot%E6%8A%80%E6%9C%AF/">spring boot classloader</a>
           </li>
         
           <li>
             <a href="/2023/10/22/hello-world/">Hello World</a>
+          </li>
+        
+          <li>
+            <a href="/2023/01/04/wireshark-grpc%E6%8A%93%E5%8C%85/">wireshark 抓包 grpc</a>
           </li>
         
       </ul>
@@ -252,7 +369,7 @@
   <div class="outer">
     <div id="footer-info" class="inner">
       
-      &copy; 2023 John Doe<br>
+      &copy; 2024 John Doe<br>
       Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
     </div>
   </div>
